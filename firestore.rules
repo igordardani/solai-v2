@@ -2,87 +2,15 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── Bloqueio total por padrão ──────────────────────────────────────────
+    // Bloqueia tudo por padrão
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // ── Funções auxiliares ─────────────────────────────────────────────────
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    // Valida o documento de entrada (UserEntry)
-    function isValidEntry(data) {
-      return data.month is int
-          && data.month >= 1
-          && data.month <= 12
-          && data.year is int
-          && data.year >= 2000
-          && data.year <= 2100
-          && data.discountValue is number
-          && data.discountValue >= 0
-          && data.discountValue <= 99999
-          && data.userId == request.auth.uid
-          // Campos opcionais com limites de segurança
-          && (data.totalBill == null || (data.totalBill is number && data.totalBill >= 0))
-          && (data.injectedkWh == null || (data.injectedkWh is number && data.injectedkWh >= 0))
-          && (data.pdfName == null || (data.pdfName is string && data.pdfName.size() <= 256))
-          // Base64 do PDF: máximo ~900KB (limite seguro abaixo de 1MB do Firestore)
-          && (data.pdfBase64 == null || (data.pdfBase64 is string && data.pdfBase64.size() <= 950000))
-          // Links externos opcionais
-          && (data.driveFileId == null || (data.driveFileId is string && data.driveFileId.size() <= 128))
-          && (data.driveLink == null || (data.driveLink is string && data.driveLink.size() <= 512));
-    }
-
-    // Valida o documento de configurações (UserSettings)
-    function isValidSettings(data) {
-      return data.investmentValue is number
-          && data.investmentValue >= 0
-          && data.investmentValue <= 9999999
-          && data.userId == request.auth.uid
-          // Campos opcionais
-          && (data.cpf == null || (data.cpf is string && data.cpf.size() <= 14))
-          && (data.installationDate == null || data.installationDate is string);
-    }
-
-    // ── Regras por coleção ─────────────────────────────────────────────────
-    match /users/{userId} {
-
-      // Entradas mensais: somente o próprio usuário lê/escreve
-      match /entries/{entryId} {
-        allow list: if isOwner(userId);
-        allow get:  if isOwner(userId);
-
-        allow create: if isOwner(userId)
-                      && isValidEntry(request.resource.data);
-
-        allow update: if isOwner(userId)
-                      && isValidEntry(request.resource.data)
-                      // Impede trocar o dono do documento
-                      && request.resource.data.userId == resource.data.userId;
-
-        allow delete: if isOwner(userId);
-      }
-
-      // Configurações: somente o próprio usuário lê/escreve
-      match /settings/main {
-        allow get:    if isOwner(userId);
-        allow create: if isOwner(userId) && isValidSettings(request.resource.data);
-        allow update: if isOwner(userId)
-                      && isValidSettings(request.resource.data)
-                      && request.resource.data.userId == resource.data.userId;
-        allow delete: if isOwner(userId);
-      }
-
-      // Sub-coleção de tokens privados (Google Drive etc.)
-      match /private/{doc} {
-        allow read, write: if isOwner(userId);
-      }
+    // Somente o próprio usuário autenticado acessa seus dados
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null
+                         && request.auth.uid == userId;
     }
   }
 }
