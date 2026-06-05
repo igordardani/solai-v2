@@ -4,6 +4,16 @@ import { UploadState, UploadStep } from "../types";
 
 const MAX_STORE_BYTES = 750_000; // 750 KB
 
+// Converte Uint8Array para base64 sem estourar o stack
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 export function useUpload() {
   const [state, setState] = useState<UploadState>({
     step: "idle",
@@ -24,7 +34,7 @@ export function useUpload() {
       reader.readAsDataURL(file);
     });
 
-  // Compacta para 1ª página se > 750KB, retorna base64 puro
+  // Compacta para 1ª página se > 750KB
   const compressPdfForStorage = async (base64: string): Promise<string | null> => {
     try {
       const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
@@ -36,10 +46,15 @@ export function useUpload() {
       dst.addPage(first);
       const compressed = await dst.save();
 
-      if (compressed.byteLength > MAX_STORE_BYTES) return null; // ainda grande demais
+      if (compressed.byteLength > MAX_STORE_BYTES) {
+        console.warn("[SOLAI] PDF ainda grande após compactar, não será armazenado.");
+        return null;
+      }
+
       console.log(`[SOLAI] PDF compactado: ${(bytes.byteLength / 1024).toFixed(0)}KB → ${(compressed.byteLength / 1024).toFixed(0)}KB`);
-      return btoa(String.fromCharCode(...compressed));
-    } catch {
+      return uint8ToBase64(compressed);
+    } catch (e) {
+      console.error("[SOLAI] Erro ao compactar PDF:", e);
       return null;
     }
   };
