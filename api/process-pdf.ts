@@ -104,14 +104,20 @@ Se for uma conta de energia, analise-a e extraia os dados abaixo em JSON puro (s
   "month": número do mês de referência (1-12),
   "year": número do ano de referência (ex: 2026),
   "totalBill": valor total a pagar da fatura em número float (R$),
-  "discountValue": soma de todos os créditos/compensações de energia injetada (itens negativos como "Energia Injetada" ou "Compensação GD") em número float positivo,
+  "discountValue": soma de TODOS os valores negativos da coluna "Valor Total (R$)" do demonstrativo, convertidos para número positivo,
   "injectedkWh": quantidade de kWh injetados no mês (0 se não informado),
   "isSolar": true se identificar sistema de geração solar
 }
 
-IMPORTANTE:
-- Se houver vários itens negativos de crédito, some-os para compor o discountValue.
-- discountValue deve ser um número positivo (o valor do desconto, não negativo).
+REGRAS PARA discountValue — leia com atenção:
+1. Identifique a tabela de itens da fatura (pode se chamar "Demonstrativo", "Itens da Fatura" ou similar).
+2. Essa tabela tem várias colunas: a primeira coluna de valor é o valor principal do item (pode se chamar "Valor (R$)", "Valor Total (R$)" ou similar). As colunas seguintes são impostos discriminados (PIS, COFINS, ICMS, etc.) — IGNORE essas colunas de impostos.
+3. Some APENAS os valores negativos da coluna PRINCIPAL de valor dos itens, independentemente da descrição (ex: "Energia Injetada", "Compensação GD", "Bônus ITAIPU", "Crédito", etc.).
+4. NÃO some valores de colunas de impostos como PIS, COFINS, ICMS mesmo que sejam negativos.
+5. O resultado deve ser um número POSITIVO (ex: se os negativos da coluna principal somam -154,11, retorne 154.11).
+
+OUTRAS REGRAS:
+- totalBill é o valor efetivamente a pagar (após todos os descontos), geralmente destacado como "Total a Pagar" ou "Valor a Pagar".
 - Retorne APENAS o JSON puro, sem texto adicional, sem blocos de código.
     `.trim();
 
