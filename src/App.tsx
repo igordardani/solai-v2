@@ -115,7 +115,6 @@ export default function App() {
         return;
       }
 
-<<<<<<< HEAD
       await addEntry({
         month:         data.month,
         year:          data.year,
@@ -126,20 +125,6 @@ export default function App() {
         ...pdfBase64Field,
         userId: user!.uid,
       });
-=======
-		await addEntry({
-		  month:         data.month,
-		  year:          data.year,
-		  discountValue: data.discountValue,
-		  ...(data.totalBill   != null && { totalBill:   data.totalBill }),
-		  ...(data.injectedkWh != null && { injectedkWh: data.injectedkWh }),
-		  ...(data.fileName    != null && { pdfName:     data.fileName }),
-		  ...(file.size < 750_000
-			? { pdfBase64: `data:application/pdf;base64,${data.base64Data}` }
-			: {}),
-		  userId: user!.uid,
-		});
->>>>>>> 042079d3fa6f9eb75435ac8818c4d491e20db0eb
     });
   }, [processFile, entries, addEntry, updateEntry, selectedModel, user]);
 
