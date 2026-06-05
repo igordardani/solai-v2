@@ -89,15 +89,18 @@ export default function App() {
       );
       if (duplicate) throw new Error(`Já existe um lançamento para ${data.month}/${data.year}.`);
 
-      await addEntry({
-        month: data.month, year: data.year,
-        discountValue: data.discountValue,
-        totalBill: data.totalBill,
-        injectedkWh: data.injectedkWh,
-        pdfName: data.fileName,        
-		pdfBase64: file.size < 750_000 ? `data:application/pdf;base64,${data.base64Data}` : null,	
-        userId: user!.uid,
-      });
+		await addEntry({
+		  month:         data.month,
+		  year:          data.year,
+		  discountValue: data.discountValue,
+		  ...(data.totalBill   != null && { totalBill:   data.totalBill }),
+		  ...(data.injectedkWh != null && { injectedkWh: data.injectedkWh }),
+		  ...(data.fileName    != null && { pdfName:     data.fileName }),
+		  ...(file.size < 750_000
+			? { pdfBase64: `data:application/pdf;base64,${data.base64Data}` }
+			: {}),
+		  userId: user!.uid,
+		});
     });
   }, [processFile, entries, addEntry, selectedModel, user]);
 
