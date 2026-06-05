@@ -32,11 +32,13 @@ const GEMINI_MODELS = [
 // ─── Modelos OpenRouter gratuitos (tentados em ordem) ────────────────────────
 // Todos suportam texto; escolhidos pela capacidade de leitura/extração de dados
 
+// "openrouter/free" roteia automaticamente para qualquer modelo gratuito disponível.
+// Listamos alguns como fallback explícito caso o roteador automático falhe.
 const OPENROUTER_MODELS = [
-  "google/gemini-2.0-flash-exp:free",
-  "meta-llama/llama-4-maverick:free",
-  "deepseek/deepseek-r1-0528:free",
-  "qwen/qwen3-235b-a22b:free",
+  "openrouter/free",
+  "nvidia/llama-3.1-nemotron-ultra-253b:free",
+  "mistralai/mistral-small-3.2:free",
+  "microsoft/phi-4-reasoning-plus:free",
 ];
 
 // ─── Prompt compartilhado ─────────────────────────────────────────────────────
