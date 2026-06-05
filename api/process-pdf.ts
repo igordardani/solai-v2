@@ -32,14 +32,15 @@ const GEMINI_MODELS = [
 // ─── Modelos OpenRouter gratuitos (tentados em ordem) ────────────────────────
 // Todos suportam texto; escolhidos pela capacidade de leitura/extração de dados
 
-// Modelos gratuitos do OpenRouter ordenados por confiabilidade de extração de dados.
-// "openrouter/free" fica por último pois escolhe modelos aleatórios que podem não
-// seguir instruções tão bem quanto modelos específicos.
+// Modelos gratuitos do OpenRouter com IDs validados em junho/2026.
+// Ordenados por capacidade de seguir instruções estruturadas (JSON).
+// "openrouter/free" fica por último pois escolhe modelos aleatoriamente.
 const OPENROUTER_MODELS = [
-  "mistralai/mistral-small-3.2:free",
-  "nvidia/llama-3.1-nemotron-ultra-253b:free",
-  "microsoft/phi-4-reasoning-plus:free",
-  "openrouter/free",
+  "google/gemma-4-31b-it:free",           // Google Gemma 4 — bom em extração estruturada
+  "nvidia/nemotron-3-super-120b-a12b:free", // NVIDIA Nemotron Super — alta capacidade
+  "openai/gpt-oss-120b:free",             // OpenAI gpt-oss-120b — raciocínio forte
+  "openrouter/owl-alpha:free",            // Owl Alpha — agentic, segue instruções bem
+  "openrouter/free",                      // roteador aleatório — último recurso
 ];
 
 // ─── Prompt compartilhado ─────────────────────────────────────────────────────
@@ -208,8 +209,12 @@ function isModelNotFoundError(msg: string): boolean {
   return msg.includes("404") || msg.toLowerCase().includes("not found");
 }
 
+function isModelInvalidError(msg: string): boolean {
+  return msg.includes("400") || msg.toLowerCase().includes("not a valid model");
+}
+
 function isSkippableError(msg: string): boolean {
-  return isQuotaError(msg) || isModelNotFoundError(msg);
+  return isQuotaError(msg) || isModelNotFoundError(msg) || isModelInvalidError(msg);
 }
 
 // ─── Handler principal ────────────────────────────────────────────────────────
