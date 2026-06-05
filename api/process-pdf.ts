@@ -16,84 +16,20 @@ interface ExtractedData {
   discountValue: number;
   injectedkWh: number;
   isSolar: boolean;
+  error?: string;
 }
 
-// ─── Modelos de fallback (tentados em ordem quando há erro 429) ───────────────
+// ─── Modelos Gemini (tentados em ordem) ──────────────────────────────────────
 
-const FALLBACK_MODELS = [
+const GEMINI_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.0-flash",
   "gemini-2.0-flash-lite",
 ];
 
-// ─── Helper: otimizar PDF ─────────────────────────────────────────────────────
+// ─── Prompt compartilhado ─────────────────────────────────────────────────────
 
-async function optimizePdf(base64Data: string): Promise<string> {
-  const buffer = Buffer.from(base64Data, "base64");
-  if (buffer.byteLength <= 750 * 1024) return base64Data;
-
-  try {
-    const pdfDoc = await PDFDocument.load(buffer);
-    if (pdfDoc.getPageCount() <= 1) return base64Data;
-
-    const newDoc = await PDFDocument.create();
-    const [firstPage] = await newDoc.copyPages(pdfDoc, [0]);
-    newDoc.addPage(firstPage);
-
-    const optimizedBytes = await newDoc.save();
-    const optimizedBase64 = Buffer.from(optimizedBytes).toString("base64");
-    console.log(`[SOLAI] PDF otimizado: ${(buffer.byteLength / 1024).toFixed(0)}KB → ${(optimizedBytes.length / 1024).toFixed(0)}KB`);
-    return optimizedBase64;
-  } catch (err) {
-    console.warn("[SOLAI] Falha ao otimizar PDF, usando original:", err);
-    return base64Data;
-  }
-}
-
-// ─── Helper: chamar Gemini com um modelo específico ───────────────────────────
-
-async function callGemini(
-  apiKey: string,
-  modelId: string,
-  prompt: string,
-  optimizedBase64: string
-): Promise<string> {
-  const ai = new GoogleGenerativeAI(apiKey);
-  const model = ai.getGenerativeModel({ model: modelId });
-  const result = await model.generateContent([
-    { text: prompt },
-    { inlineData: { mimeType: "application/pdf", data: optimizedBase64 } },
-  ]);
-  return result.response.text();
-}
-
-// ─── Handler principal ────────────────────────────────────────────────────────
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || !apiKey.startsWith("AIzaSy")) {
-    console.error("[SOLAI] GEMINI_API_KEY não configurada no ambiente Vercel.");
-    return res.status(500).json({ error: "Serviço de IA não configurado. Contate o administrador." });
-  }
-
-  const { base64Data, selectedModel = "gemini-2.5-flash" } = req.body as ProcessPdfBody;
-
-  if (!base64Data || typeof base64Data !== "string") {
-    return res.status(400).json({ error: "base64Data é obrigatório." });
-  }
-
-  if (base64Data.length > 5 * 1024 * 1024 * 1.4) {
-    return res.status(413).json({ error: "Arquivo muito grande. Máximo: 5MB." });
-  }
-
-  try {
-    const optimizedBase64 = await optimizePdf(base64Data);
-
-    const prompt = `
+const PROMPT = `
 Você é um especialista em faturas de energia solar da Energisa Brasil.
 
 Primeiro, verifique se este documento é genuinamente uma fatura/conta de energia elétrica.
@@ -121,60 +57,211 @@ REGRAS PARA discountValue — leia com atenção:
 OUTRAS REGRAS:
 - totalBill é o valor efetivamente a pagar (após todos os descontos), geralmente destacado como "Total a Pagar" ou "Valor a Pagar".
 - Retorne APENAS o JSON puro, sem texto adicional, sem blocos de código.
-    `.trim();
+`.trim();
 
-    // ── Fallback automático: tenta selectedModel primeiro, depois os demais ──
+// ─── Helper: otimizar PDF ─────────────────────────────────────────────────────
+
+async function optimizePdf(base64Data: string): Promise<string> {
+  const buffer = Buffer.from(base64Data, "base64");
+  if (buffer.byteLength <= 750 * 1024) return base64Data;
+
+  try {
+    const pdfDoc = await PDFDocument.load(buffer);
+    if (pdfDoc.getPageCount() <= 1) return base64Data;
+
+    const newDoc = await PDFDocument.create();
+    const [firstPage] = await newDoc.copyPages(pdfDoc, [0]);
+    newDoc.addPage(firstPage);
+
+    const optimizedBytes = await newDoc.save();
+    const optimizedBase64 = Buffer.from(optimizedBytes).toString("base64");
+    console.log(
+      `[SOLAI] PDF otimizado: ${(buffer.byteLength / 1024).toFixed(0)}KB → ${(optimizedBytes.length / 1024).toFixed(0)}KB`
+    );
+    return optimizedBase64;
+  } catch (err) {
+    console.warn("[SOLAI] Falha ao otimizar PDF, usando original:", err);
+    return base64Data;
+  }
+}
+
+// ─── Helper: chamar Gemini ────────────────────────────────────────────────────
+
+async function callGemini(
+  apiKey: string,
+  modelId: string,
+  optimizedBase64: string
+): Promise<string> {
+  const ai = new GoogleGenerativeAI(apiKey);
+  const model = ai.getGenerativeModel({ model: modelId });
+  const result = await model.generateContent([
+    { text: PROMPT },
+    { inlineData: { mimeType: "application/pdf", data: optimizedBase64 } },
+  ]);
+  return result.response.text();
+}
+
+// ─── Helper: chamar Claude (Anthropic) ───────────────────────────────────────
+
+async function callClaude(
+  apiKey: string,
+  optimizedBase64: string
+): Promise<string> {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001", // modelo mais rápido e econômico
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: optimizedBase64,
+              },
+            },
+            {
+              type: "text",
+              text: PROMPT,
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Claude API error ${response.status}: ${errorBody}`);
+  }
+
+  const data = await response.json();
+  const textBlock = data.content?.find((b: any) => b.type === "text");
+  if (!textBlock?.text) throw new Error("Claude não retornou texto.");
+  return textBlock.text;
+}
+
+// ─── Helpers: classificar erros de cota/modelo ────────────────────────────────
+
+function isQuotaError(msg: string): boolean {
+  return msg.includes("429") || msg.toLowerCase().includes("quota") || msg.toLowerCase().includes("rate limit");
+}
+
+function isModelNotFoundError(msg: string): boolean {
+  return msg.includes("404") || msg.toLowerCase().includes("not found");
+}
+
+// ─── Handler principal ────────────────────────────────────────────────────────
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const claudeKey = process.env.ANTHROPIC_API_KEY;
+
+  if (!geminiKey || !geminiKey.startsWith("AIzaSy")) {
+    console.error("[SOLAI] GEMINI_API_KEY não configurada no ambiente Vercel.");
+    return res
+      .status(500)
+      .json({ error: "Serviço de IA não configurado. Contate o administrador." });
+  }
+
+  const { base64Data, selectedModel = "gemini-2.5-flash" } =
+    req.body as ProcessPdfBody;
+
+  if (!base64Data || typeof base64Data !== "string") {
+    return res.status(400).json({ error: "base64Data é obrigatório." });
+  }
+
+  if (base64Data.length > 5 * 1024 * 1024 * 1.4) {
+    return res.status(413).json({ error: "Arquivo muito grande. Máximo: 5MB." });
+  }
+
+  try {
+    const optimizedBase64 = await optimizePdf(base64Data);
+
+    // ── 1. Tenta todos os modelos Gemini ──────────────────────────────────────
     const selectedModelId = selectedModel.includes("/")
       ? selectedModel.split("/").pop()!
       : selectedModel;
 
-    // Monta a fila: modelo escolhido + fallbacks sem repetir
-    const queue = [
+    const geminiQueue = [
       selectedModelId,
-      ...FALLBACK_MODELS.filter((m) => m !== selectedModelId),
+      ...GEMINI_MODELS.filter((m) => m !== selectedModelId),
     ];
 
     let responseText = "";
     let usedModel = "";
-    let lastError = "";
 
-    for (const modelId of queue) {
+    for (const modelId of geminiQueue) {
       try {
-        console.log(`[SOLAI] Tentando modelo: ${modelId}`);
-        responseText = await callGemini(apiKey, modelId, prompt, optimizedBase64);
-        usedModel = modelId;
-        console.log(`[SOLAI] Sucesso com: ${modelId}`);
+        console.log(`[SOLAI] Tentando Gemini: ${modelId}`);
+        responseText = await callGemini(geminiKey, modelId, optimizedBase64);
+        usedModel = `gemini/${modelId}`;
+        console.log(`[SOLAI] Sucesso com Gemini: ${modelId}`);
         break;
       } catch (err: any) {
         const msg = String(err?.message || err);
-        lastError = msg;
-        if (msg.includes("429") || msg.toLowerCase().includes("quota")) {
+        if (isQuotaError(msg)) {
           console.warn(`[SOLAI] Cota esgotada para ${modelId}, tentando próximo...`);
-          continue; // tenta o próximo
+          continue;
         }
-        if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+        if (isModelNotFoundError(msg)) {
           console.warn(`[SOLAI] Modelo não encontrado: ${modelId}, tentando próximo...`);
-          continue; // modelo deprecado — tenta o próximo
+          continue;
         }
-        throw err; // outro erro — propaga imediatamente
+        throw err; // erro inesperado — propaga
       }
     }
 
+    // ── 2. Fallback para Claude se todos os Gemini falharam por cota ──────────
     if (!responseText) {
-      return res.status(429).json({
-        error: "Limite diário atingido em todos os modelos de IA. Tente novamente amanhã ou ative o faturamento no Google Cloud.",
-      });
+      if (!claudeKey) {
+        console.warn("[SOLAI] Todos os modelos Gemini esgotaram a cota e ANTHROPIC_API_KEY não está configurada.");
+        return res.status(429).json({
+          error:
+            "Limite diário atingido em todos os modelos de IA. Tente novamente amanhã ou configure uma chave Anthropic como backup.",
+        });
+      }
+
+      try {
+        console.log("[SOLAI] Todos os Gemini falharam, tentando Claude (Anthropic)...");
+        responseText = await callClaude(claudeKey, optimizedBase64);
+        usedModel = "anthropic/claude-haiku-4-5";
+        console.log("[SOLAI] Sucesso com Claude.");
+      } catch (err: any) {
+        const msg = String(err?.message || err);
+        console.error("[SOLAI] Claude também falhou:", msg);
+
+        if (isQuotaError(msg)) {
+          return res.status(429).json({
+            error: "Limite diário atingido em todos os modelos de IA (Gemini e Claude). Tente novamente amanhã.",
+          });
+        }
+        throw err;
+      }
     }
 
     console.log(`[SOLAI] Resposta (${usedModel}):`, responseText.slice(0, 300));
 
-    // ── Parsear JSON ─────────────────────────────────────────────────────────
+    // ── Parsear JSON ──────────────────────────────────────────────────────────
     const cleanJson = responseText
       .replace(/```json\s*/gi, "")
       .replace(/```\s*/gi, "")
       .trim();
 
-    let extracted: ExtractedData & { error?: string };
+    let extracted: ExtractedData;
     try {
       extracted = JSON.parse(cleanJson);
     } catch {
@@ -194,9 +281,14 @@ OUTRAS REGRAS:
     const discountValue = Number(extracted.discountValue);
 
     if (
-      isNaN(month) || month < 1 || month > 12 ||
-      isNaN(year) || year < 2000 || year > 2100 ||
-      isNaN(discountValue) || discountValue < 0
+      isNaN(month) ||
+      month < 1 ||
+      month > 12 ||
+      isNaN(year) ||
+      year < 2000 ||
+      year > 2100 ||
+      isNaN(discountValue) ||
+      discountValue < 0
     ) {
       return res.status(422).json({
         error: "Dados extraídos inválidos. Verifique se o PDF é uma fatura de energia válida.",
@@ -210,25 +302,20 @@ OUTRAS REGRAS:
       discountValue,
       injectedkWh: Number(extracted.injectedkWh) || 0,
       isSolar: Boolean(extracted.isSolar),
+      _usedModel: usedModel, // útil para debug nos logs do Vercel
     });
-
   } catch (err: any) {
     console.error("[SOLAI] Erro no processamento:", err);
     const msg = String(err?.message || err);
 
-    if (msg.includes("429") || msg.toLowerCase().includes("quota")) {
+    if (isQuotaError(msg)) {
       return res.status(429).json({
-        error: "Limite diário atingido em todos os modelos de IA. Tente novamente amanhã ou ative o faturamento no Google Cloud.",
+        error: "Limite diário atingido. Tente novamente amanhã.",
       });
     }
-    if (msg.toLowerCase().includes("api key not valid")) {
+    if (msg.toLowerCase().includes("api key not valid") || msg.includes("401")) {
       return res.status(401).json({
         error: "Chave de API inválida. Verifique as variáveis de ambiente no Vercel.",
-      });
-    }
-    if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
-      return res.status(404).json({
-        error: `Modelo "${selectedModel}" não encontrado.`,
       });
     }
 
