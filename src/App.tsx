@@ -68,7 +68,7 @@ export default function App() {
   // Dados + métricas
   const {
     entries, loading, metrics, chartData, yearlyChartData,
-    addEntry, deleteEntry,
+    addEntry, updateEntry, deleteEntry,
   } = useEntries(user?.uid ?? null, investment);
 
   // Upload multi-step
@@ -84,22 +84,49 @@ export default function App() {
   // Handlers
   const handleFile = useCallback((file: File) => {
     processFile(file, selectedModel, async (data) => {
-      const duplicate = entries.some(
+      const existing = entries.find(
         (e) => e.month === data.month && e.year === data.year
       );
-      if (duplicate) throw new Error(`Já existe um lançamento para ${data.month}/${data.year}.`);
+
+      const pdfBase64Field = file.size < 750_000
+        ? { pdfBase64: `data:application/pdf;base64,${data.base64Data}` }
+        : {};
+
+      if (existing) {
+        // Verifica se já tem todos os campos preenchidos
+        const isComplete = existing.totalBill != null
+          && existing.injectedkWh != null
+          && existing.pdfBase64 != null;
+
+        if (isComplete) {
+          throw new Error(`Já existe um lançamento para ${data.month}/${data.year}.`);
+        }
+
+        // Atualiza apenas os campos que estavam faltando
+        await updateEntry(existing.id, {
+          discountValue: data.discountValue,
+          ...(data.totalBill   != null && { totalBill:   data.totalBill }),
+          ...(data.injectedkWh != null && { injectedkWh: data.injectedkWh }),
+          ...(data.fileName    != null && { pdfName:     data.fileName }),
+          ...pdfBase64Field,
+        });
+
+        setToast({ msg: `Dados de ${String(data.month).padStart(2, "0")}/${data.year} atualizados!`, type: "success" });
+        return;
+      }
 
       await addEntry({
-        month: data.month, year: data.year,
+        month:         data.month,
+        year:          data.year,
         discountValue: data.discountValue,
-        totalBill: data.totalBill,
-        injectedkWh: data.injectedkWh,
-        pdfName: data.fileName,
-        pdfBase64: file.size < 750_000 ? `data:application/pdf;base64,${data.base64Data}` : undefined,
+        ...(data.totalBill   != null && { totalBill:   data.totalBill }),
+        ...(data.injectedkWh != null && { injectedkWh: data.injectedkWh }),
+        ...(data.fileName    != null && { pdfName:     data.fileName }),
+        ...pdfBase64Field,
         userId: user!.uid,
       });
     });
-  }, [processFile, entries, addEntry, selectedModel, user]);
+  }, [processFile, entries, addEntry, updateEntry, selectedModel, user]);
 
   const handleManualSubmit = async (data: any) => {
     await addEntry({ ...data, userId: user!.uid });
