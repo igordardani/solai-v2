@@ -1,5 +1,8 @@
 import { useState, useCallback } from "react";
+import { PDFDocument } from "pdf-lib";
 import { UploadState, UploadStep } from "../types";
+
+const MAX_STORE_BYTES = 750_000; // 750 KB
 
 export function useUpload() {
   const [state, setState] = useState<UploadState>({
@@ -13,7 +16,6 @@ export function useUpload() {
 
   const reset = () => setState({ step: "idle", error: null, result: null });
 
-  // Lê o arquivo e retorna base64 puro
   const readFileAsBase64 = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -22,6 +24,26 @@ export function useUpload() {
       reader.readAsDataURL(file);
     });
 
+  // Compacta para 1ª página se > 750KB, retorna base64 puro
+  const compressPdfForStorage = async (base64: string): Promise<string | null> => {
+    try {
+      const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+      if (bytes.byteLength <= MAX_STORE_BYTES) return base64;
+
+      const src = await PDFDocument.load(bytes);
+      const dst = await PDFDocument.create();
+      const [first] = await dst.copyPages(src, [0]);
+      dst.addPage(first);
+      const compressed = await dst.save();
+
+      if (compressed.byteLength > MAX_STORE_BYTES) return null; // ainda grande demais
+      console.log(`[SOLAI] PDF compactado: ${(bytes.byteLength / 1024).toFixed(0)}KB → ${(compressed.byteLength / 1024).toFixed(0)}KB`);
+      return btoa(String.fromCharCode(...compressed));
+    } catch {
+      return null;
+    }
+  };
+
   const processFile = useCallback(
     async (
       file: File,
@@ -29,7 +51,7 @@ export function useUpload() {
       onSuccess: (data: {
         month: number; year: number; totalBill: number;
         discountValue: number; injectedkWh: number;
-        base64Data: string; fileName: string;
+        base64Data: string; storageBase64: string | null; fileName: string;
       }) => Promise<void>
     ) => {
       if (state.step !== "idle" && state.step !== "error" && state.step !== "done") return;
@@ -51,11 +73,11 @@ export function useUpload() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Erro no servidor.");
 
-        // Etapa 3 — salvar no Firestore (delegado ao callback)
+        // Etapa 3 — compactar PDF para armazenamento e salvar
         setStep("saving");
-        await onSuccess({ ...data, base64Data, fileName: file.name });
+        const storageBase64 = await compressPdfForStorage(base64Data);
+        await onSuccess({ ...data, base64Data, storageBase64, fileName: file.name });
 
-        // Concluído
         setState({
           step: "done",
           error: null,
@@ -66,7 +88,6 @@ export function useUpload() {
           },
         });
 
-        // Volta para idle após 4s
         setTimeout(reset, 4000);
       } catch (err: any) {
         const msg = cleanError(err?.message || String(err));

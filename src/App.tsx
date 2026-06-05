@@ -88,8 +88,8 @@ export default function App() {
         (e) => e.month === data.month && e.year === data.year
       );
 
-      const pdfBase64Field = file.size < 750_000
-        ? { pdfBase64: `data:application/pdf;base64,${data.base64Data}` }
+      const pdfBase64Field = data.storageBase64
+        ? { pdfBase64: `data:application/pdf;base64,${data.storageBase64}` }
         : {};
 
       if (existing) {
