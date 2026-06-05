@@ -23,7 +23,7 @@ interface ExtractedData {
 const FALLBACK_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.0-flash",
-  "gemini-1.5-flash",
+  "gemini-2.0-flash-lite",
 ];
 
 // ─── Helper: otimizar PDF ─────────────────────────────────────────────────────
@@ -152,7 +152,11 @@ OUTRAS REGRAS:
           console.warn(`[SOLAI] Cota esgotada para ${modelId}, tentando próximo...`);
           continue; // tenta o próximo
         }
-        throw err; // erro diferente de cota — propaga imediatamente
+        if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+          console.warn(`[SOLAI] Modelo não encontrado: ${modelId}, tentando próximo...`);
+          continue; // modelo deprecado — tenta o próximo
+        }
+        throw err; // outro erro — propaga imediatamente
       }
     }
 
