@@ -32,25 +32,27 @@ const GEMINI_MODELS = [
 // ─── Modelos OpenRouter gratuitos (tentados em ordem) ────────────────────────
 // Todos suportam texto; escolhidos pela capacidade de leitura/extração de dados
 
-// "openrouter/free" roteia automaticamente para qualquer modelo gratuito disponível.
-// Listamos alguns como fallback explícito caso o roteador automático falhe.
+// Modelos gratuitos do OpenRouter ordenados por confiabilidade de extração de dados.
+// "openrouter/free" fica por último pois escolhe modelos aleatórios que podem não
+// seguir instruções tão bem quanto modelos específicos.
 const OPENROUTER_MODELS = [
-  "openrouter/free",
-  "nvidia/llama-3.1-nemotron-ultra-253b:free",
   "mistralai/mistral-small-3.2:free",
+  "nvidia/llama-3.1-nemotron-ultra-253b:free",
   "microsoft/phi-4-reasoning-plus:free",
+  "openrouter/free",
 ];
 
 // ─── Prompt compartilhado ─────────────────────────────────────────────────────
 
 const PROMPT = `
-Você é um especialista em faturas de energia solar da Energisa Brasil.
+Você é um especialista em faturas de energia elétrica brasileiras (Energisa, CPFL, Enel, etc.).
 
-Primeiro, verifique se este documento é genuinamente uma fatura/conta de energia elétrica.
-Se NÃO for uma conta de energia, retorne EXATAMENTE este JSON:
+O texto a seguir foi extraído de uma fatura de energia elétrica. Extraia os dados abaixo e retorne APENAS um JSON puro (sem blocos markdown, sem explicações).
+
+Se por algum motivo o texto claramente não for de uma fatura de energia elétrica, retorne:
 { "error": "Esse arquivo não é uma conta de energia." }
 
-Se for uma conta de energia, analise-a e extraia os dados abaixo em JSON puro (sem blocos markdown):
+Caso contrário, extraia e retorne:
 
 {
   "month": número do mês de referência (1-12),
