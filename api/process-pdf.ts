@@ -160,9 +160,33 @@ async function callOpenRouter(
 
   const data = await response.json();
 
-  // Modelos de raciocínio (DeepSeek R1 etc.) podem retornar reasoning separado
-  const text = data.choices?.[0]?.message?.content ?? "";
-  if (!text) throw new Error("OpenRouter não retornou texto.");
+  // Log completo para debug — ficará visível nos logs do Vercel
+  console.log("[SOLAI] OpenRouter raw response:", JSON.stringify(data).slice(0, 500));
+
+  const message = data.choices?.[0]?.message;
+
+  // Alguns modelos retornam array de partes em content, outros retornam string
+  let text = "";
+  if (typeof message?.content === "string") {
+    text = message.content;
+  } else if (Array.isArray(message?.content)) {
+    text = message.content
+      .filter((b: any) => b.type === "text")
+      .map((b: any) => b.text ?? "")
+      .join("");
+  }
+
+  // Modelos de raciocínio (DeepSeek R1, Nemotron etc.) às vezes colocam a
+  // resposta em reasoning_content quando content vem nulo/vazio
+  if (!text) {
+    text = message?.reasoning_content ?? message?.reasoning ?? "";
+  }
+
+  if (!text) {
+    throw new Error(
+      `OpenRouter não retornou texto. Estrutura recebida: ${JSON.stringify(data).slice(0, 300)}`
+    );
+  }
   return text;
 }
 
