@@ -1,6 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { PDFDocument } from "pdf-lib";
+// @ts-ignore — pdf-parse não tem tipos oficiais
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -25,6 +27,16 @@ const GEMINI_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.0-flash",
   "gemini-2.0-flash-lite",
+];
+
+// ─── Modelos OpenRouter gratuitos (tentados em ordem) ────────────────────────
+// Todos suportam texto; escolhidos pela capacidade de leitura/extração de dados
+
+const OPENROUTER_MODELS = [
+  "google/gemini-2.0-flash-exp:free",
+  "meta-llama/llama-4-maverick:free",
+  "deepseek/deepseek-r1-0528:free",
+  "qwen/qwen3-235b-a22b:free",
 ];
 
 // ─── Prompt compartilhado ─────────────────────────────────────────────────────
@@ -59,7 +71,7 @@ OUTRAS REGRAS:
 - Retorne APENAS o JSON puro, sem texto adicional, sem blocos de código.
 `.trim();
 
-// ─── Helper: otimizar PDF ─────────────────────────────────────────────────────
+// ─── Helper: otimizar PDF (mantém só 1ª página se muito grande) ──────────────
 
 async function optimizePdf(base64Data: string): Promise<string> {
   const buffer = Buffer.from(base64Data, "base64");
@@ -85,6 +97,17 @@ async function optimizePdf(base64Data: string): Promise<string> {
   }
 }
 
+// ─── Helper: extrair texto do PDF (para OpenRouter) ──────────────────────────
+
+async function extractPdfText(base64Data: string): Promise<string> {
+  const buffer = Buffer.from(base64Data, "base64");
+  const data = await pdfParse(buffer);
+  const text = data.text?.trim() ?? "";
+  if (!text) throw new Error("PDF sem camada de texto extraível.");
+  // Limita a ~12.000 chars para não estourar contexto dos modelos gratuitos
+  return text.length > 12000 ? text.slice(0, 12000) + "\n[texto truncado]" : text;
+}
+
 // ─── Helper: chamar Gemini ────────────────────────────────────────────────────
 
 async function callGemini(
@@ -101,39 +124,28 @@ async function callGemini(
   return result.response.text();
 }
 
-// ─── Helper: chamar Claude (Anthropic) ───────────────────────────────────────
+// ─── Helper: chamar OpenRouter (texto extraído do PDF) ───────────────────────
 
-async function callClaude(
+async function callOpenRouter(
   apiKey: string,
-  optimizedBase64: string
+  modelId: string,
+  pdfText: string
 ): Promise<string> {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://solai.vercel.app", // identifica seu app no OpenRouter
+      "X-Title": "SOLAI",
     },
     body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001", // modelo mais rápido e econômico
+      model: modelId,
       max_tokens: 1024,
       messages: [
         {
           role: "user",
-          content: [
-            {
-              type: "document",
-              source: {
-                type: "base64",
-                media_type: "application/pdf",
-                data: optimizedBase64,
-              },
-            },
-            {
-              type: "text",
-              text: PROMPT,
-            },
-          ],
+          content: `${PROMPT}\n\n---\nTEXTO EXTRAÍDO DA FATURA:\n${pdfText}`,
         },
       ],
     }),
@@ -141,23 +153,35 @@ async function callClaude(
 
   if (!response.ok) {
     const errorBody = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${errorBody}`);
+    throw new Error(`OpenRouter error ${response.status}: ${errorBody}`);
   }
 
   const data = await response.json();
-  const textBlock = data.content?.find((b: any) => b.type === "text");
-  if (!textBlock?.text) throw new Error("Claude não retornou texto.");
-  return textBlock.text;
+
+  // Modelos de raciocínio (DeepSeek R1 etc.) podem retornar reasoning separado
+  const text = data.choices?.[0]?.message?.content ?? "";
+  if (!text) throw new Error("OpenRouter não retornou texto.");
+  return text;
 }
 
-// ─── Helpers: classificar erros de cota/modelo ────────────────────────────────
+// ─── Helpers: classificar erros ───────────────────────────────────────────────
 
 function isQuotaError(msg: string): boolean {
-  return msg.includes("429") || msg.toLowerCase().includes("quota") || msg.toLowerCase().includes("rate limit");
+  return (
+    msg.includes("429") ||
+    msg.toLowerCase().includes("quota") ||
+    msg.toLowerCase().includes("rate limit") ||
+    msg.toLowerCase().includes("rate_limit") ||
+    msg.toLowerCase().includes("too many requests")
+  );
 }
 
 function isModelNotFoundError(msg: string): boolean {
   return msg.includes("404") || msg.toLowerCase().includes("not found");
+}
+
+function isSkippableError(msg: string): boolean {
+  return isQuotaError(msg) || isModelNotFoundError(msg);
 }
 
 // ─── Handler principal ────────────────────────────────────────────────────────
@@ -168,10 +192,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const geminiKey = process.env.GEMINI_API_KEY;
-  const claudeKey = process.env.ANTHROPIC_API_KEY;
+  const openrouterKey = process.env.OPENROUTER_API_KEY;
 
   if (!geminiKey || !geminiKey.startsWith("AIzaSy")) {
-    console.error("[SOLAI] GEMINI_API_KEY não configurada no ambiente Vercel.");
+    console.error("[SOLAI] GEMINI_API_KEY não configurada.");
     return res
       .status(500)
       .json({ error: "Serviço de IA não configurado. Contate o administrador." });
@@ -213,44 +237,60 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         break;
       } catch (err: any) {
         const msg = String(err?.message || err);
-        if (isQuotaError(msg)) {
-          console.warn(`[SOLAI] Cota esgotada para ${modelId}, tentando próximo...`);
+        if (isSkippableError(msg)) {
+          console.warn(`[SOLAI] Gemini ${modelId} indisponível: ${msg.slice(0, 80)}`);
           continue;
-        }
-        if (isModelNotFoundError(msg)) {
-          console.warn(`[SOLAI] Modelo não encontrado: ${modelId}, tentando próximo...`);
-          continue;
-        }
-        throw err; // erro inesperado — propaga
-      }
-    }
-
-    // ── 2. Fallback para Claude se todos os Gemini falharam por cota ──────────
-    if (!responseText) {
-      if (!claudeKey) {
-        console.warn("[SOLAI] Todos os modelos Gemini esgotaram a cota e ANTHROPIC_API_KEY não está configurada.");
-        return res.status(429).json({
-          error:
-            "Limite diário atingido em todos os modelos de IA. Tente novamente amanhã ou configure uma chave Anthropic como backup.",
-        });
-      }
-
-      try {
-        console.log("[SOLAI] Todos os Gemini falharam, tentando Claude (Anthropic)...");
-        responseText = await callClaude(claudeKey, optimizedBase64);
-        usedModel = "anthropic/claude-haiku-4-5";
-        console.log("[SOLAI] Sucesso com Claude.");
-      } catch (err: any) {
-        const msg = String(err?.message || err);
-        console.error("[SOLAI] Claude também falhou:", msg);
-
-        if (isQuotaError(msg)) {
-          return res.status(429).json({
-            error: "Limite diário atingido em todos os modelos de IA (Gemini e Claude). Tente novamente amanhã.",
-          });
         }
         throw err;
       }
+    }
+
+    // ── 2. Fallback OpenRouter se todos os Gemini falharam ────────────────────
+    if (!responseText) {
+      if (!openrouterKey) {
+        console.warn("[SOLAI] Gemini esgotado e OPENROUTER_API_KEY não configurada.");
+        return res.status(429).json({
+          error:
+            "Limite diário atingido no Gemini. Configure OPENROUTER_API_KEY no Vercel para usar modelos alternativos gratuitos.",
+        });
+      }
+
+      // Extrai texto do PDF uma única vez para todos os modelos OpenRouter
+      let pdfText = "";
+      try {
+        pdfText = await extractPdfText(optimizedBase64);
+        console.log(`[SOLAI] Texto extraído do PDF: ${pdfText.length} chars`);
+      } catch (err: any) {
+        console.error("[SOLAI] Falha ao extrair texto do PDF:", err.message);
+        return res.status(422).json({
+          error:
+            "Não foi possível ler o texto deste PDF. O arquivo pode ser uma imagem escaneada. Tente fazer upload de uma fatura digital.",
+        });
+      }
+
+      for (const modelId of OPENROUTER_MODELS) {
+        try {
+          console.log(`[SOLAI] Tentando OpenRouter: ${modelId}`);
+          responseText = await callOpenRouter(openrouterKey, modelId, pdfText);
+          usedModel = `openrouter/${modelId}`;
+          console.log(`[SOLAI] Sucesso com OpenRouter: ${modelId}`);
+          break;
+        } catch (err: any) {
+          const msg = String(err?.message || err);
+          if (isSkippableError(msg)) {
+            console.warn(`[SOLAI] OpenRouter ${modelId} indisponível: ${msg.slice(0, 80)}`);
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
+
+    if (!responseText) {
+      return res.status(429).json({
+        error:
+          "Limite diário atingido em todos os modelos de IA disponíveis. Tente novamente amanhã.",
+      });
     }
 
     console.log(`[SOLAI] Resposta (${usedModel}):`, responseText.slice(0, 300));
@@ -267,7 +307,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } catch {
       console.error("[SOLAI] JSON inválido da IA:", cleanJson);
       return res.status(422).json({
-        error: "A IA retornou um formato de dados inválido. Tente novamente com outro arquivo.",
+        error:
+          "A IA retornou um formato de dados inválido. Tente novamente com outro arquivo.",
       });
     }
 
@@ -291,7 +332,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       discountValue < 0
     ) {
       return res.status(422).json({
-        error: "Dados extraídos inválidos. Verifique se o PDF é uma fatura de energia válida.",
+        error:
+          "Dados extraídos inválidos. Verifique se o PDF é uma fatura de energia válida.",
       });
     }
 
@@ -302,7 +344,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       discountValue,
       injectedkWh: Number(extracted.injectedkWh) || 0,
       isSolar: Boolean(extracted.isSolar),
-      _usedModel: usedModel, // útil para debug nos logs do Vercel
+      _usedModel: usedModel,
     });
   } catch (err: any) {
     console.error("[SOLAI] Erro no processamento:", err);
@@ -313,9 +355,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         error: "Limite diário atingido. Tente novamente amanhã.",
       });
     }
-    if (msg.toLowerCase().includes("api key not valid") || msg.includes("401")) {
+    if (
+      msg.toLowerCase().includes("api key not valid") ||
+      msg.includes("401")
+    ) {
       return res.status(401).json({
-        error: "Chave de API inválida. Verifique as variáveis de ambiente no Vercel.",
+        error:
+          "Chave de API inválida. Verifique as variáveis de ambiente no Vercel.",
       });
     }
 
