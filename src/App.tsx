@@ -94,8 +94,8 @@ export default function App() {
         discountValue: data.discountValue,
         totalBill: data.totalBill,
         injectedkWh: data.injectedkWh,
-        pdfName: data.fileName,
-        pdfBase64: file.size < 750_000 ? `data:application/pdf;base64,${data.base64Data}` : undefined,
+        pdfName: data.fileName,        
+		pdfBase64: file.size < 750_000 ? `data:application/pdf;base64,${data.base64Data}` : null,	
         userId: user!.uid,
       });
     });
