@@ -59,35 +59,14 @@ Caso contrário, extraia e retorne:
   "month": número do mês de referência (1-12),
   "year": número do ano de referência (ex: 2026),
   "totalBill": valor total a pagar da fatura em número float (R$),
-  "discountValue": soma de TODOS os valores negativos da coluna "Valor Total (R$)" do demonstrativo, convertidos para número positivo,
+  "discountValue": 0,
   "injectedkWh": quantidade de kWh injetados no mês (0 se não informado),
   "isSolar": true se identificar sistema de geração solar
 }
 
-REGRAS PARA discountValue — leia com atenção:
-
-A tabela de itens da fatura (chamada "Itens da Fatura", "Demonstrativo" ou similar) tem MÚLTIPLAS colunas de valores.
-Você precisa identificar qual coluna é a PRINCIPAL (valor do item em si) e ignorar todas as demais.
-
-IDENTIFICANDO A COLUNA PRINCIPAL:
-- No formato antigo (Nota Fiscal/Conta de Energia): a coluna principal chama-se "Valor Total (R$)".
-- No formato DANF3E (Documento Auxiliar da Nota Fiscal de Energia Elétrica Eletrônica): a coluna principal chama-se "Valor (R$)". As colunas seguintes — "COFINS (R$)", "Base Calc. ICMS (R$)", "ICMS (R$)" — são impostos e devem ser IGNORADAS.
-- Em qualquer formato: a coluna principal é sempre a que representa o valor total do item antes de discriminar os impostos. Impostos aparecem em colunas separadas à direita.
-
-PASSOS:
-1. Localize a linha de "Energia Atv Injetada" (ou "Energia Injetada", "Compensação GD", "Bônus ITAIPU", "Crédito" etc.).
-2. Pegue SOMENTE o valor da coluna PRINCIPAL dessa linha (ex: -253,86).
-3. IGNORE os valores das colunas de impostos dessa mesma linha (ex: COFINS -12,62, ICMS -21,98 — não entram no cálculo).
-4. Some todos os valores negativos encontrados na coluna PRINCIPAL, de todas as linhas.
-5. Converta o resultado para número POSITIVO (ex: -253,86 → 253.86).
-
-EXEMPLO CONCRETO (formato DANF3E):
-Linha: "Energia Atv Injetada GDII | Valor (R$): -253,86 | COFINS (R$): -12,62 | ICMS (R$): -21,98"
-→ discountValue correto: 253.86  (apenas a coluna Valor (R$), ignorando COFINS e ICMS)
-→ discountValue ERRADO:  266.48  (não somar COFINS junto)
-
 OUTRAS REGRAS:
 - totalBill é o valor efetivamente a pagar (após todos os descontos), geralmente destacado como "Total a Pagar" ou "Valor a Pagar".
+- O campo discountValue pode ser retornado como 0 — ele será calculado separadamente.
 - Retorne APENAS o JSON puro, sem texto adicional, sem blocos de código.
 `.trim();
 
@@ -126,6 +105,36 @@ async function extractPdfText(base64Data: string): Promise<string> {
   if (!text) throw new Error("PDF sem camada de texto extraível.");
   // Limita a ~12.000 chars para não estourar contexto dos modelos gratuitos
   return text.length > 12000 ? text.slice(0, 12000) + "\n[texto truncado]" : text;
+}
+
+// ─── Helper: calcular discountValue direto do texto (sem depender da IA) ────────
+// Pega o PRIMEIRO valor negativo de cada linha de desconto solar.
+// O primeiro negativo é sempre a coluna principal (Valor R$ ou Valor Total R$),
+// independente do formato da fatura (DANF3E ou formato antigo).
+
+function extractDiscountFromText(pdfText: string): number | null {
+  const discountKeywords = /(injetad|compensaç|compensa|bônus|bonus|crédito|credito|gdii|gd_ii)/i;
+  const negativeValue = /-(\d{1,3}(?:\.\d{3})*(?:,\d{2})|\d+,\d{2})/;
+
+  let total = 0;
+  let found = false;
+
+  for (const line of pdfText.split("
+")) {
+    if (discountKeywords.test(line)) {
+      const match = line.match(negativeValue);
+      if (match) {
+        const val = parseFloat(match[1].replace(/\./g, "").replace(",", "."));
+        if (!isNaN(val) && val > 0) {
+          total += val;
+          found = true;
+          console.log(`[SOLAI] Desconto detectado via regex: -${val} | linha: ${line.trim().slice(0, 80)}`);
+        }
+      }
+    }
+  }
+
+  return found ? Math.round(total * 100) / 100 : null;
 }
 
 // ─── Helper: chamar Gemini ────────────────────────────────────────────────────
@@ -293,26 +302,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // ── 2. Fallback OpenRouter se todos os Gemini falharam ────────────────────
+    // ── 2. Extrai texto do PDF para: (a) fallback OpenRouter e (b) regex de desconto
+    let pdfText = "";
+    try {
+      pdfText = await extractPdfText(optimizedBase64);
+      console.log(`[SOLAI] Texto extraído do PDF: ${pdfText.length} chars`);
+    } catch {
+      // PDF sem camada de texto (ex: escaneado) — não é fatal se Gemini já respondeu
+      if (!responseText) {
+        return res.status(422).json({
+          error:
+            "Não foi possível ler o texto deste PDF. O arquivo pode ser uma imagem escaneada. Tente fazer upload de uma fatura digital.",
+        });
+      }
+    }
+
+    // ── 3. Fallback OpenRouter se todos os Gemini falharam ────────────────────
     if (!responseText) {
       if (!openrouterKey) {
         console.warn("[SOLAI] Gemini esgotado e OPENROUTER_API_KEY não configurada.");
         return res.status(429).json({
           error:
             "Limite diário atingido no Gemini. Configure OPENROUTER_API_KEY no Vercel para usar modelos alternativos gratuitos.",
-        });
-      }
-
-      // Extrai texto do PDF uma única vez para todos os modelos OpenRouter
-      let pdfText = "";
-      try {
-        pdfText = await extractPdfText(optimizedBase64);
-        console.log(`[SOLAI] Texto extraído do PDF: ${pdfText.length} chars`);
-      } catch (err: any) {
-        console.error("[SOLAI] Falha ao extrair texto do PDF:", err.message);
-        return res.status(422).json({
-          error:
-            "Não foi possível ler o texto deste PDF. O arquivo pode ser uma imagem escaneada. Tente fazer upload de uma fatura digital.",
         });
       }
 
@@ -367,7 +378,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const month = Number(extracted.month);
     const year = Number(extracted.year);
     const totalBill = Number(extracted.totalBill);
-    const discountValue = Number(extracted.discountValue);
+
+    // Regex é mais confiável que a IA para discountValue — usa sempre que possível
+    const regexDiscount = pdfText ? extractDiscountFromText(pdfText) : null;
+    const discountValue = regexDiscount !== null
+      ? regexDiscount
+      : Number(extracted.discountValue);
+
+    console.log(`[SOLAI] discountValue: ${discountValue} (fonte: ${regexDiscount !== null ? "regex" : "IA"})`);
 
     if (
       isNaN(month) ||
