@@ -113,31 +113,28 @@ async function extractPdfText(base64Data: string): Promise<string> {
 // independente do formato da fatura (DANF3E ou formato antigo).
 
 function extractDiscountFromText(pdfText: string): number | null {
-  // Estratégia 1 (DANF3E): localiza o bloco entre "Itens da Fatura" e "TOTAL:"
-  // Nesse formato os nomes ficam separados dos valores — não é possível associar
-  // keyword + negativo na mesma linha.
-  // Regra: o MAIOR negativo do bloco = coluna Valor(R$) da energia injetada.
-  // Negativos menores são colunas de impostos (PIS/COFINS, ICMS) — ignorados.
-  const blockMatch = pdfText.match(/Itens da Fatura([\s\S]+?)TOTAL:/i);
-  if (blockMatch) {
-    const block = blockMatch[1];
-    const negatives = [...block.matchAll(/-(\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2})/g)];
-    if (negatives.length > 0) {
-      const vals = negatives
-        .map((m) => parseFloat(m[1].replace(/[.]/g, "").replace(",", ".")))
-        .filter((v) => !isNaN(v) && v > 0);
-      if (vals.length > 0) {
-        const val = Math.max(...vals);
-        console.log("[SOLAI] discountValue via bloco DANF3E (maior negativo): " + val);
+  const negRegex = /-(\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2})/g;
+
+  // Estratégia 1 (DANF3E com pdf-parse): o pdf-parse extrai colunas fora de ordem,
+  // então o bloco "Itens da Fatura → TOTAL:" pode não conter os valores.
+  // Solução: busca o primeiro negativo >= 50 após keyword de energia injetada.
+  const gdiiIdx = pdfText.search(/(Injetad[ao]|GDII|GD_II|Compensa)/i);
+  if (gdiiIdx >= 0) {
+    const afterGdii = pdfText.slice(gdiiIdx, gdiiIdx + 300);
+    const m = afterGdii.match(/-(\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2})/);
+    if (m) {
+      const val = parseFloat(m[1].replace(/[.]/g, "").replace(",", "."));
+      if (!isNaN(val) && val >= 50) {
+        console.log("[SOLAI] discountValue via GDII keyword (DANF3E): " + val);
         return Math.round(val * 100) / 100;
       }
     }
   }
 
-  // Estratégia 2 (formato antigo): keyword + negativo na mesma linha
-  // Soma todos os negativos de linhas com palavras-chave de desconto solar
+  // Estratégia 2 (formato antigo / DANF3E alternativo):
+  // keyword + negativo na mesma linha — soma todos
   const discountKeywords = /(injetad|compensa|bonus|credito|gdii|gd_ii)/i;
-  const negativeValue = /-((\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2}))/;
+  const negativeValue = /-(\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2})/;
   let total = 0;
   let found = false;
   for (const line of pdfText.split(/\r?\n/)) {
@@ -153,7 +150,20 @@ function extractDiscountFromText(pdfText: string): number | null {
       }
     }
   }
-  return found ? Math.round(total * 100) / 100 : null;
+  if (found) return Math.round(total * 100) / 100;
+
+  // Estratégia 3 (último recurso): maior negativo >= 50 em todo o texto
+  // (desconto de energia é sempre > 50; impostos negativos são menores)
+  const allVals = [...pdfText.matchAll(negRegex)]
+    .map((m) => parseFloat(m[1].replace(/[.]/g, "").replace(",", ".")))
+    .filter((v) => !isNaN(v) && v >= 50);
+  if (allVals.length > 0) {
+    const val = Math.max(...allVals);
+    console.log("[SOLAI] discountValue via maior negativo global: " + val);
+    return Math.round(val * 100) / 100;
+  }
+
+  return null;
 }
 
 // ─── Helper: chamar Gemini ────────────────────────────────────────────────────
