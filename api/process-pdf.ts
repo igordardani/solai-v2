@@ -114,23 +114,28 @@ async function extractPdfText(base64Data: string): Promise<string> {
 
 function extractDiscountFromText(pdfText: string): number | null {
   // Estratégia 1 (DANF3E): localiza o bloco entre "Itens da Fatura" e "TOTAL:"
-  // Nesse formato os nomes dos itens ficam em coluna separada dos valores,
-  // então não é possível associar keyword + negativo na mesma linha.
-  // O primeiro negativo do bloco é sempre a coluna Valor(R$) da energia injetada.
+  // Nesse formato os nomes ficam separados dos valores — não é possível associar
+  // keyword + negativo na mesma linha.
+  // Regra: o MAIOR negativo do bloco = coluna Valor(R$) da energia injetada.
+  // Negativos menores são colunas de impostos (PIS/COFINS, ICMS) — ignorados.
   const blockMatch = pdfText.match(/Itens da Fatura([\s\S]+?)TOTAL:/i);
   if (blockMatch) {
     const block = blockMatch[1];
     const negatives = [...block.matchAll(/-(\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2})/g)];
     if (negatives.length > 0) {
-      const val = parseFloat(negatives[0][1].replace(/[.]/g, "").replace(",", "."));
-      if (!isNaN(val) && val > 0) {
-        console.log("[SOLAI] discountValue via bloco DANF3E: " + val);
+      const vals = negatives
+        .map((m) => parseFloat(m[1].replace(/[.]/g, "").replace(",", ".")))
+        .filter((v) => !isNaN(v) && v > 0);
+      if (vals.length > 0) {
+        const val = Math.max(...vals);
+        console.log("[SOLAI] discountValue via bloco DANF3E (maior negativo): " + val);
         return Math.round(val * 100) / 100;
       }
     }
   }
 
   // Estratégia 2 (formato antigo): keyword + negativo na mesma linha
+  // Soma todos os negativos de linhas com palavras-chave de desconto solar
   const discountKeywords = /(injetad|compensa|bonus|credito|gdii|gd_ii)/i;
   const negativeValue = /-((\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2}))/;
   let total = 0;
