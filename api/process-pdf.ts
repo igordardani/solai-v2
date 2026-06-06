@@ -113,22 +113,22 @@ async function extractPdfText(base64Data: string): Promise<string> {
 // independente do formato da fatura (DANF3E ou formato antigo).
 
 function extractDiscountFromText(pdfText: string): number | null {
-  const discountKeywords = /(injetad|compensaç|compensa|bônus|bonus|crédito|credito|gdii|gd_ii)/i;
-  const negativeValue = /-(\d{1,3}(?:\.\d{3})*(?:,\d{2})|\d+,\d{2})/;
+  const discountKeywords = /(injetad|compensa|bonus|credito|gdii|gd_ii)/i;
+  const negativeValue = /-(\d{1,3}(?:[.]\d{3})*(?:,\d{2})|\d+,\d{2})/;
 
   let total = 0;
   let found = false;
 
-  for (const line of pdfText.split("
-")) {
+  const lines = pdfText.split(/\r?\n/);
+  for (const line of lines) {
     if (discountKeywords.test(line)) {
-      const match = line.match(negativeValue);
+      const match = negativeValue.exec(line);
       if (match) {
-        const val = parseFloat(match[1].replace(/\./g, "").replace(",", "."));
+        const val = parseFloat(match[1].replace(/[.]/g, "").replace(",", "."));
         if (!isNaN(val) && val > 0) {
           total += val;
           found = true;
-          console.log(`[SOLAI] Desconto detectado via regex: -${val} | linha: ${line.trim().slice(0, 80)}`);
+          console.log("[SOLAI] Desconto via regex: -" + val + " | " + line.trim().slice(0, 80));
         }
       }
     }
