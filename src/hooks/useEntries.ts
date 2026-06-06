@@ -22,8 +22,10 @@ export function useEntries(userId: string | null, investmentValue: number) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Aguarda userId válido E auth confirmado antes de qualquer query
-    if (!userId || !auth.currentUser) {
+    // Aguarda userId válido antes de qualquer query.
+    // Removida a checagem de auth.currentUser — ela não é reativa e causava
+    // saída prematura do effect quando o user chegava antes do currentUser.
+    if (!userId) {
       setLoading(false);
       return;
     }
@@ -72,7 +74,7 @@ export function useEntries(userId: string | null, investmentValue: number) {
     );
 
     return unsub;
-  }, [userId, auth.currentUser?.uid]);
+  }, [userId]);
 
   const metrics = useMemo(
     () => calculateMetrics(entries, investmentValue),
