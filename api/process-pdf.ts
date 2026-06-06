@@ -248,6 +248,16 @@ function isQuotaError(msg: string): boolean {
   );
 }
 
+function isServiceUnavailableError(msg: string): boolean {
+  return (
+    msg.includes("503") ||
+    msg.toLowerCase().includes("service unavailable") ||
+    msg.toLowerCase().includes("overloaded") ||
+    msg.toLowerCase().includes("high demand") ||
+    msg.toLowerCase().includes("try again later")
+  );
+}
+
 function isModelNotFoundError(msg: string): boolean {
   return msg.includes("404") || msg.toLowerCase().includes("not found");
 }
@@ -257,7 +267,7 @@ function isModelInvalidError(msg: string): boolean {
 }
 
 function isSkippableError(msg: string): boolean {
-  return isQuotaError(msg) || isModelNotFoundError(msg) || isModelInvalidError(msg);
+  return isQuotaError(msg) || isServiceUnavailableError(msg) || isModelNotFoundError(msg) || isModelInvalidError(msg);
 }
 
 // ─── Handler principal ────────────────────────────────────────────────────────
