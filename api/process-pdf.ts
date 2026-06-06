@@ -65,11 +65,26 @@ Caso contrário, extraia e retorne:
 }
 
 REGRAS PARA discountValue — leia com atenção:
-1. Identifique a tabela de itens da fatura (pode se chamar "Demonstrativo", "Itens da Fatura" ou similar).
-2. Essa tabela tem várias colunas: a primeira coluna de valor é o valor principal do item (pode se chamar "Valor (R$)", "Valor Total (R$)" ou similar). As colunas seguintes são impostos discriminados (PIS, COFINS, ICMS, etc.) — IGNORE essas colunas de impostos.
-3. Some APENAS os valores negativos da coluna PRINCIPAL de valor dos itens, independentemente da descrição (ex: "Energia Injetada", "Compensação GD", "Bônus ITAIPU", "Crédito", etc.).
-4. NÃO some valores de colunas de impostos como PIS, COFINS, ICMS mesmo que sejam negativos.
-5. O resultado deve ser um número POSITIVO (ex: se os negativos da coluna principal somam -154,11, retorne 154.11).
+
+A tabela de itens da fatura (chamada "Itens da Fatura", "Demonstrativo" ou similar) tem MÚLTIPLAS colunas de valores.
+Você precisa identificar qual coluna é a PRINCIPAL (valor do item em si) e ignorar todas as demais.
+
+IDENTIFICANDO A COLUNA PRINCIPAL:
+- No formato antigo (Nota Fiscal/Conta de Energia): a coluna principal chama-se "Valor Total (R$)".
+- No formato DANF3E (Documento Auxiliar da Nota Fiscal de Energia Elétrica Eletrônica): a coluna principal chama-se "Valor (R$)". As colunas seguintes — "COFINS (R$)", "Base Calc. ICMS (R$)", "ICMS (R$)" — são impostos e devem ser IGNORADAS.
+- Em qualquer formato: a coluna principal é sempre a que representa o valor total do item antes de discriminar os impostos. Impostos aparecem em colunas separadas à direita.
+
+PASSOS:
+1. Localize a linha de "Energia Atv Injetada" (ou "Energia Injetada", "Compensação GD", "Bônus ITAIPU", "Crédito" etc.).
+2. Pegue SOMENTE o valor da coluna PRINCIPAL dessa linha (ex: -253,86).
+3. IGNORE os valores das colunas de impostos dessa mesma linha (ex: COFINS -12,62, ICMS -21,98 — não entram no cálculo).
+4. Some todos os valores negativos encontrados na coluna PRINCIPAL, de todas as linhas.
+5. Converta o resultado para número POSITIVO (ex: -253,86 → 253.86).
+
+EXEMPLO CONCRETO (formato DANF3E):
+Linha: "Energia Atv Injetada GDII | Valor (R$): -253,86 | COFINS (R$): -12,62 | ICMS (R$): -21,98"
+→ discountValue correto: 253.86  (apenas a coluna Valor (R$), ignorando COFINS e ICMS)
+→ discountValue ERRADO:  266.48  (não somar COFINS junto)
 
 OUTRAS REGRAS:
 - totalBill é o valor efetivamente a pagar (após todos os descontos), geralmente destacado como "Total a Pagar" ou "Valor a Pagar".
