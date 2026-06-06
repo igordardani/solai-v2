@@ -113,26 +113,36 @@ async function extractPdfText(base64Data: string): Promise<string> {
 // independente do formato da fatura (DANF3E ou formato antigo).
 
 function extractDiscountFromText(pdfText: string): number | null {
-  const negRegex = /-(\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2})/g;
+  // O pdf-parse extrai as colunas da tabela intercaladas, não linha por linha.
+  // Padrão DANF3E: após "Consumo em kWh", os valores vêm na ordem:
+  //   tarifa, NEGATIVO(desconto), outros, tarifa, NEGATIVO(desconto)...
+  //   seguidos do valor do consumo (positivo > 100), depois colunas de impostos.
+  // Regra: somar todos os negativos que aparecem ANTES do primeiro positivo > 100.
 
-  // Estratégia 1 (DANF3E com pdf-parse): o pdf-parse extrai colunas fora de ordem,
-  // então o bloco "Itens da Fatura → TOTAL:" pode não conter os valores.
-  // Solução: busca o primeiro negativo >= 50 após keyword de energia injetada.
-  const gdiiIdx = pdfText.search(/(Injetad[ao]|GDII|GD_II|Compensa)/i);
-  if (gdiiIdx >= 0) {
-    const afterGdii = pdfText.slice(gdiiIdx, gdiiIdx + 300);
-    const m = afterGdii.match(/-(\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2})/);
-    if (m) {
-      const val = parseFloat(m[1].replace(/[.]/g, "").replace(",", "."));
-      if (!isNaN(val) && val >= 50) {
-        console.log("[SOLAI] discountValue via GDII keyword (DANF3E): " + val);
-        return Math.round(val * 100) / 100;
+  const consumoIdx = pdfText.indexOf("Consumo em kWh");
+  if (consumoIdx >= 0) {
+    const block = pdfText.slice(consumoIdx, consumoIdx + 600);
+    const nums = [...block.matchAll(/(-?\d{1,3}(?:[.]\d{3})*,\d{2}(?:\d+)?)/g)]
+      .map((m) => parseFloat(m[1].replace(/[.]/g, "").replace(",", ".")));
+
+    let total = 0;
+    let found = false;
+    for (const n of nums) {
+      if (n > 100) break; // chegou no valor positivo do consumo (ex: 380,58) — para aqui
+      if (n < -0.01) {    // é negativo: soma como desconto
+        total += Math.abs(n);
+        found = true;
       }
+      // valores positivos pequenos (tarifas como 0,854150) são ignorados
+    }
+    if (found) {
+      const result = Math.round(total * 100) / 100;
+      console.log("[SOLAI] discountValue via bloco DANF3E (soma negativos pré-consumo): " + result);
+      return result;
     }
   }
 
-  // Estratégia 2 (formato antigo / DANF3E alternativo):
-  // keyword + negativo na mesma linha — soma todos
+  // Fallback: keyword + negativo na mesma linha (formatos alternativos)
   const discountKeywords = /(injetad|compensa|bonus|credito|gdii|gd_ii)/i;
   const negativeValue = /-(\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2})/;
   let total = 0;
@@ -145,23 +155,12 @@ function extractDiscountFromText(pdfText: string): number | null {
         if (!isNaN(val) && val > 0) {
           total += val;
           found = true;
-          console.log("[SOLAI] discountValue via linha: -" + val);
+          console.log("[SOLAI] discountValue via linha keyword: -" + val);
         }
       }
     }
   }
   if (found) return Math.round(total * 100) / 100;
-
-  // Estratégia 3 (último recurso): maior negativo >= 50 em todo o texto
-  // (desconto de energia é sempre > 50; impostos negativos são menores)
-  const allVals = [...pdfText.matchAll(negRegex)]
-    .map((m) => parseFloat(m[1].replace(/[.]/g, "").replace(",", ".")))
-    .filter((v) => !isNaN(v) && v >= 50);
-  if (allVals.length > 0) {
-    const val = Math.max(...allVals);
-    console.log("[SOLAI] discountValue via maior negativo global: " + val);
-    return Math.round(val * 100) / 100;
-  }
 
   return null;
 }
