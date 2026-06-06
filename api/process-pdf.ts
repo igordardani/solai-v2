@@ -113,27 +113,41 @@ async function extractPdfText(base64Data: string): Promise<string> {
 // independente do formato da fatura (DANF3E ou formato antigo).
 
 function extractDiscountFromText(pdfText: string): number | null {
-  const discountKeywords = /(injetad|compensa|bonus|credito|gdii|gd_ii)/i;
-  const negativeValue = /-(\d{1,3}(?:[.]\d{3})*(?:,\d{2})|\d+,\d{2})/;
-
-  let total = 0;
-  let found = false;
-
-  const lines = pdfText.split(/\r?\n/);
-  for (const line of lines) {
-    if (discountKeywords.test(line)) {
-      const match = negativeValue.exec(line);
-      if (match) {
-        const val = parseFloat(match[1].replace(/[.]/g, "").replace(",", "."));
-        if (!isNaN(val) && val > 0) {
-          total += val;
-          found = true;
-          console.log("[SOLAI] Desconto via regex: -" + val + " | " + line.trim().slice(0, 80));
-        }
+  // Estratégia 1 (DANF3E): localiza o bloco entre "Itens da Fatura" e "TOTAL:"
+  // Nesse formato os nomes dos itens ficam em coluna separada dos valores,
+  // então não é possível associar keyword + negativo na mesma linha.
+  // O primeiro negativo do bloco é sempre a coluna Valor(R$) da energia injetada.
+  const blockMatch = pdfText.match(/Itens da Fatura([\s\S]+?)TOTAL:/i);
+  if (blockMatch) {
+    const block = blockMatch[1];
+    const negatives = [...block.matchAll(/-(\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2})/g)];
+    if (negatives.length > 0) {
+      const val = parseFloat(negatives[0][1].replace(/[.]/g, "").replace(",", "."));
+      if (!isNaN(val) && val > 0) {
+        console.log("[SOLAI] discountValue via bloco DANF3E: " + val);
+        return Math.round(val * 100) / 100;
       }
     }
   }
 
+  // Estratégia 2 (formato antigo): keyword + negativo na mesma linha
+  const discountKeywords = /(injetad|compensa|bonus|credito|gdii|gd_ii)/i;
+  const negativeValue = /-((\d{1,3}(?:[.]\d{3})*,\d{2}|\d+,\d{2}))/;
+  let total = 0;
+  let found = false;
+  for (const line of pdfText.split(/\r?\n/)) {
+    if (discountKeywords.test(line)) {
+      const m = negativeValue.exec(line);
+      if (m) {
+        const val = parseFloat(m[1].replace(/[.]/g, "").replace(",", "."));
+        if (!isNaN(val) && val > 0) {
+          total += val;
+          found = true;
+          console.log("[SOLAI] discountValue via linha: -" + val);
+        }
+      }
+    }
+  }
   return found ? Math.round(total * 100) / 100 : null;
 }
 
